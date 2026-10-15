@@ -545,7 +545,8 @@
     if (cv) {
       for (let i = 0; i < lambdas.length; i++) if (best < 0 || cv.mean[i] < cv.mean[best]) best = i;
     }
-    return { lambdas, logLambdas: lambdas.map(Math.log10), coefs, train, cv, best };
+    // `prep` + `model` let callers rebuild any fit on the path (R.toModel(prep, coefs[i], model)).
+    return { lambdas, logLambdas: lambdas.map(Math.log10), coefs, train, cv, best, prep, model: m };
   }
 
   // Train and CV error as a function of the basis size, at the current penalty.
@@ -669,34 +670,47 @@
   }
 
   // Best test MSE over a grid of settings (the "oracle" reference for the challenge).
+  // With opts.fixed = { basis, size, width } only the penalty and its strength are searched.
   function oracle(train, test, opts = {}) {
     const xs = train.map((p) => p.x);
     const ys = train.map((p) => p.y);
     const tx = test.map((p) => p.x);
     const ty = test.map((p) => p.y);
-    const lambdas = lambdaGrid(opts.count || 18);
+    const lambdas = lambdaGrid(opts.count || (opts.fixed ? 36 : 18));
+    const feats = [];
+    if (opts.fixed) feats.push(opts.fixed);
+    else for (const b of Object.values(bases)) for (let k = b.min; k <= b.max; k++) feats.push({ basis: b.id, size: k, width: 1 });
+    const pens = opts.fixed ? ['none', 'ridge', 'lasso', 'elastic'] : ['none', 'ridge', 'lasso'];
     let best = { mse: Infinity, model: null };
-    for (const b of Object.values(bases)) {
-      for (let k = b.min; k <= b.max; k++) {
-        for (const pen of ['none', 'ridge', 'lasso']) {
-          const m = normalizeModel({ basis: b.id, size: k, width: 1, penalty: pen });
-          const prep = prepare(xs, ys, m);
-          const { alpha } = lambdaAlpha(m);
-          const grid = pen === 'none' ? [0] : lambdas;
-          let warm = null;
-          for (const li of order(grid)) {
-            const w = solve(prep, grid[li], alpha, warm, { tol: 1e-5, maxSweeps: 60 });
-            warm = w;
-            const e = mse(toModel(prep, w, m), tx, ty);
-            if (e < best.mse) {
-              best = { mse: e, model: Object.assign({}, m, { logLambda: pen === 'none' ? m.logLambda : Math.log10(grid[li]) }) };
-            }
+    for (const f of feats) {
+      for (const pen of pens) {
+        const m = normalizeModel(Object.assign({}, f, { penalty: pen, alpha: 0.5 }));
+        const prep = prepare(xs, ys, m);
+        const { alpha } = lambdaAlpha(m);
+        const grid = pen === 'none' ? [0] : lambdas;
+        let warm = null;
+        for (const li of order(grid)) {
+          const w = solve(prep, grid[li], alpha, warm, { tol: 1e-5, maxSweeps: 60 });
+          warm = w;
+          const e = mse(toModel(prep, w, m), tx, ty);
+          if (e < best.mse) {
+            best = { mse: e, model: Object.assign({}, m, { logLambda: pen === 'none' ? m.logLambda : Math.log10(grid[li]) }) };
           }
         }
       }
     }
     return best;
   }
+
+  // Large, fixed feature sets for "tame the wiggle" rounds: all of them overfit
+  // badly without a penalty at the challenge's sample sizes.
+  const wiggleModels = [
+    { basis: 'poly', size: 12, width: 1 },
+    { basis: 'poly', size: 15, width: 1 },
+    { basis: 'rbf', size: 18, width: 1 },
+    { basis: 'rbf', size: 20, width: 0.75 },
+    { basis: 'fourier', size: 8, width: 1 },
+  ];
 
   root.Reg = {
     DOMAIN,
@@ -726,5 +740,6 @@
     sample,
     randomTarget,
     oracle,
+    wiggleModels,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

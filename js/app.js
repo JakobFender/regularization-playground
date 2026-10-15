@@ -195,7 +195,11 @@
       onChange(kind);
     };
 
-    container.append(el('h3', 'label', 'Features'));
+    const featWrap = el('div');
+    const lockedNote = el('p', 'locked-note');
+    lockedNote.hidden = true;
+    container.append(featWrap);
+    featWrap.append(el('h3', 'label', 'Features'));
     const basisSeg = segmented(
       Object.values(R.bases).map((b) => [b.id, b.id === 'rbf' ? 'RBF' : b.name]),
       () => model.basis,
@@ -207,9 +211,9 @@
       },
       'Basis functions'
     );
-    container.append(basisSeg.el);
+    featWrap.append(basisSeg.el);
     const basisTex = el('div', 'formula small');
-    container.append(basisTex);
+    featWrap.append(basisTex);
 
     const params = el('div', 'params');
     const size = slider({
@@ -236,7 +240,7 @@
       },
     });
     params.append(size.el, width.el);
-    container.append(params);
+    featWrap.append(params);
     let bestSizeBtn = null;
     if (extras.onBestSize) {
       bestSizeBtn = el('button', 'link-btn', 'Use CV-best size');
@@ -244,10 +248,11 @@
       bestSizeBtn.addEventListener('click', extras.onBestSize);
       const r = el('div', 'link-row');
       r.append(bestSizeBtn);
-      container.append(r);
+      featWrap.append(r);
     }
 
-    container.append(el('h3', 'label', 'Penalty'));
+    const penHead = el('h3', 'label', 'Penalty');
+    container.append(lockedNote, penHead);
     const penSeg = segmented(
       Object.values(R.penalties).map((p) => [p.id, p.name]),
       () => model.penalty,
@@ -337,6 +342,12 @@
       retex() {
         lastBasis = lastPenalty = null;
         syncAll();
+      },
+      // Hide the feature controls and show `text` instead (null unlocks).
+      lockFeatures(text) {
+        featWrap.hidden = !!text;
+        lockedNote.hidden = !text;
+        lockedNote.textContent = text || '';
       },
     };
   }
@@ -1006,28 +1017,36 @@
   // ---------------------------------------------------------------------------
 
   const c = {
-    model: R.normalizeModel(store.get('rp-challenge-model', { basis: 'poly', size: 3, penalty: 'none' })),
+    model: R.normalizeModel({ basis: 'poly', size: 12, penalty: 'none' }),
     round: null,
     submitted: false,
     oracle: null,
     oracleFit: null,
     fit: null,
+    path: null,
+    noPenaltyCv: null,
     stats: Object.assign({ score: 0, won: 0, streak: 0, best: 0 }, store.get('rp-challenge-stats', {})),
   };
   const N_TEST = 200;
+  // Free rounds start from a flexible model that overfits, so the penalty is the tool to reach for.
+  const FREE_START = { basis: 'poly', size: 12, width: 1, penalty: 'none', logLambda: -2, alpha: 0.5 };
 
   const cPlot = new window.Plot($('c-canvas'), {
     margin: { left: 40 },
     onHover: (h) => (c.round ? scatterTooltip(h, cPlot, c.round.train, c.fit, c.submitted ? c.round.target.f : null) : null),
   });
-  plots.push(cPlot);
+  const cErrPlot = new window.Plot($('c-err-canvas'), { margin: { left: 44, bottom: 28 }, onHover: cErrHover });
+  plots.push(cPlot, cErrPlot);
 
-  const cControls = buildModelControls($('c-model'), c.model, () => {
-    store.set('rp-challenge-model', c.model);
+  const cControls = buildModelControls($('c-model'), c.model, (kind) => {
+    if (kind !== 'lambda') {
+      c.path = null;
+      c.noPenaltyCv = null;
+    }
     renderChallengeSoon();
   });
 
-  for (const id of ['c-n', 'c-noise', 'c-threshold']) {
+  for (const id of ['c-mode', 'c-n', 'c-noise', 'c-threshold']) {
     const saved = store.get(`rp-${id}`, null);
     if (saved != null) $(id).value = saved;
     $(id).addEventListener('change', () => {
@@ -1036,16 +1055,27 @@
     });
   }
 
+  const isWiggle = () => $('c-mode').value === 'wiggle';
+
   function newRound() {
     const seed = (Math.random() * 2 ** 31) >>> 0;
     const rng = R.mulberry32(seed);
     const target = R.randomTarget(rng);
     const n = Number($('c-n').value);
     const noise = Number($('c-noise').value);
-    c.round = { seed, target, noise, train: R.sample(target.f, n, noise, rng), test: R.sample(target.f, N_TEST, noise, rng) };
+    const wiggle = isWiggle();
+    const fixed = wiggle ? R.wiggleModels[Math.floor(rng() * R.wiggleModels.length)] : null;
+    c.round = { seed, target, noise, fixed, train: R.sample(target.f, n, noise, rng), test: R.sample(target.f, N_TEST, noise, rng) };
+    Object.assign(c.model, FREE_START, fixed || {});
+    cControls.lockFeatures(
+      fixed ? `Fixed for this round: ${modelSummary(Object.assign({}, c.model, { penalty: 'none' })).replace(' · no penalty', '')}. Only the penalty is yours to choose.` : null
+    );
+    cControls.sync();
     c.submitted = false;
     c.oracle = null;
     c.oracleFit = null;
+    c.path = null;
+    c.noPenaltyCv = null;
     $('c-result').hidden = true;
     $('c-submit').disabled = false;
     $('c-hint').textContent = 'Training data only · test points appear after you submit';
@@ -1059,7 +1089,7 @@
 
   function computeOracle() {
     const r = c.round;
-    c.oracle = R.oracle(r.train, r.test);
+    c.oracle = R.oracle(r.train, r.test, r.fixed ? { fixed: r.fixed } : {});
     c.oracleFit = R.fit(r.train.map((p) => p.x), r.train.map((p) => p.y), c.oracle.model);
   }
 
@@ -1075,6 +1105,10 @@
     const ys = r.train.map((p) => p.y);
     c.fit = R.fit(xs, ys, c.model);
     const cv = R.cvAt(xs, ys, c.model);
+    if (c.noPenaltyCv == null) {
+      const base = R.cvAt(xs, ys, Object.assign({}, c.model, { penalty: 'none' }));
+      c.noPenaltyCv = base ? base.mean : NaN;
+    }
     const { spec, legend } = scatterSpec({
       points: r.train,
       fit: c.fit,
@@ -1087,6 +1121,21 @@
     cPlot.set(spec);
     $('c-legend').innerHTML = legendHtml(legend);
     $('c-cv').textContent = cv ? fmt(cv.mean) : '–';
+
+    // Change against the same features without a penalty.
+    const delta = $('c-delta');
+    if (cv && c.model.penalty !== 'none' && isFinite(c.noPenaltyCv)) {
+      const ratio = cv.mean / c.noPenaltyCv;
+      const pct = (ratio - 1) * 100;
+      const big = (v) => (v >= 1e5 ? fmt(v) : Math.round(v).toLocaleString('en-US'));
+      const change =
+        ratio < 0.1 ? `${big(1 / ratio)}× lower` : ratio > 2 ? `${big(ratio)}× higher` : `${Math.abs(pct).toFixed(Math.abs(pct) < 10 ? 1 : 0)}% ${pct < 0 ? 'lower' : 'higher'}`;
+      delta.textContent = `${change} than no penalty (${fmt(c.noPenaltyCv)})`;
+      delta.className = `delta ${pct < -0.5 ? 'better' : pct > 0.5 ? 'worse' : ''}`;
+    } else if (cv && isFinite(c.noPenaltyCv)) {
+      delta.textContent = 'No penalty. Pick ridge, lasso or elastic net to shrink the weights.';
+      delta.className = 'delta';
+    } else delta.textContent = '';
 
     const fb = $('c-feedback');
     if (cv && cv.mean > 2 * c.fit.trainMSE && cv.mean - c.fit.trainMSE > 0.2) {
@@ -1103,8 +1152,82 @@
     ];
     if (c.submitted) items.push({ label: 'Best on test', value: fmt(c.oracle.mse) });
     $('c-readout').innerHTML = readoutHtml(items);
+    cCurveSoon();
   }
   const renderChallengeSoon = rafThrottle(renderChallenge);
+
+  // CV error vs λ for the current features and penalty (test error is added after submitting).
+  function renderChallengeCurve() {
+    if (!c.round) return;
+    const c1 = cssColor('--series-1');
+    const ink = cssColor('--series-2');
+    const muted = cssColor('--series-3');
+    const lx = { min: R.LOG_LAMBDA.min, max: R.LOG_LAMBDA.max, log: true };
+    const r = c.round;
+    if (c.model.penalty === 'none') {
+      c.path = null;
+      cErrPlot.set({ x: lx, y: { min: 0, max: 1 }, series: [], message: 'No penalty selected.\nPick ridge, lasso or elastic net to see the curve.' });
+      $('c-curve-meta').textContent = '';
+      return;
+    }
+    if (!c.path) {
+      c.path = R.path(r.train.map((p) => p.x), r.train.map((p) => p.y), c.model, { count: 36, tol: 1e-5, maxSweeps: 100 });
+      c.path.test = null;
+    }
+    const P = c.path;
+    if (!P.cv) {
+      cErrPlot.set({ x: lx, y: { min: 0, max: 1 }, series: [], message: 'Not enough points for cross-validation' });
+      return;
+    }
+    if (c.submitted && !P.test) P.test = P.coefs.map((w) => testMSE(R.toModel(P.prep, w, P.model)));
+    const cv = Array.from(P.cv.mean);
+    const se = Array.from(P.cv.se);
+    const minCv = Math.min(...cv);
+    const shown = c.submitted ? cv.concat(P.test) : cv;
+    const yMax = Math.min(Math.max(...shown), 4 * minCv) * 1.1 || 1;
+    const series = [
+      { kind: 'band', xs: P.lambdas, lo: cv.map((v, i) => v - se[i]), hi: cv.map((v, i) => v + se[i]), color: c1, fill: 0.12 },
+    ];
+    if (isFinite(c.noPenaltyCv)) {
+      series.push({ kind: 'line', xs: [P.lambdas[0], P.lambdas[P.lambdas.length - 1]], ys: [c.noPenaltyCv, c.noPenaltyCv], color: ink, width: 1, dash: [4, 4], alpha: 0.6 });
+    }
+    if (c.submitted) series.push({ kind: 'line', xs: P.lambdas, ys: P.test, color: ink, width: 1.5, alpha: 0.8 });
+    series.push({ kind: 'line', xs: P.lambdas, ys: cv, color: c1, width: 2 });
+    series.push({ kind: 'markers', xs: [Math.pow(10, c.model.logLambda)], ys: [R.cvAt(r.train.map((p) => p.x), r.train.map((p) => p.y), c.model).mean], color: c1, radius: 4 });
+    cErrPlot.set({
+      x: lx,
+      y: { min: 0, max: yMax },
+      series,
+      vlines: [{ x: Math.pow(10, c.model.logLambda), color: muted, dash: [3, 3], label: `λ ${fmtLambda(c.model.logLambda)}` }],
+      crosshair: true,
+    });
+    const off = isFinite(c.noPenaltyCv) && c.noPenaltyCv > yMax ? ` · no-penalty line off the chart (${fmt(c.noPenaltyCv)})` : '';
+    $('c-curve-meta').textContent = `${R.penalties[c.model.penalty].name}${off}`;
+    $('c-curve-note').innerHTML = c.submitted
+      ? '<span class="key accent"></span>CV (± 1 SE) <span class="key dashed"></span>no penalty <span class="key solid"></span>test error, now revealed'
+      : '<span class="key accent"></span>CV (± 1 SE) <span class="key dashed"></span>no penalty · click to set λ';
+  }
+  const cCurveSoon = debounce(renderChallengeCurve, 60);
+
+  function cErrHover(h) {
+    const P = c.path;
+    if (!P || !P.cv || c.model.penalty === 'none') return null;
+    const i = nearestIndex(P.logLambdas, Math.log10(h.x));
+    const lines = [`<b>λ</b> ${fmtLambda(P.logLambdas[i])}`, `<b>CV</b> ${fmt(P.cv.mean[i])} ± ${fmt(P.cv.se[i])}`];
+    if (c.submitted && P.test) lines.push(`<b>test</b> ${fmt(P.test[i])}`);
+    lines.push('click to set λ');
+    return lines;
+  }
+
+  $('c-err-canvas').addEventListener('click', (e) => {
+    if (!cErrPlot.spec || cErrPlot.spec.message) return;
+    const { px, py } = cErrPlot.localPoint(e);
+    if (!cErrPlot.inPlot(px, py)) return;
+    const { x } = cErrPlot.pxToData(px, py);
+    c.model.logLambda = clamp(Math.round(Math.log10(x) * 20) / 20, R.LOG_LAMBDA.min, R.LOG_LAMBDA.max);
+    cControls.sync();
+    renderChallengeSoon();
+  });
 
   function submit() {
     if (!c.round || c.submitted) return;
@@ -1131,25 +1254,36 @@
     const headline = win
       ? ratio >= 0.99
         ? 'Spot <em>on</em>'
-        : 'Nicely <em>generalized</em>'
+        : r.fixed
+          ? 'Wiggle <em>tamed</em>'
+          : 'Nicely <em>generalized</em>'
       : yours > 3 * c.oracle.mse
         ? 'That one <em>wobbled</em>'
         : 'Close, but not <em>quite</em>';
+    const bestText = r.fixed
+      ? R.penalties[c.oracle.model.penalty].name + (c.oracle.model.penalty === 'none' ? '' : ` λ = ${fmtLambda(c.oracle.model.logLambda)}`)
+      : modelSummary(c.oracle.model);
     box.innerHTML = `
       <h3>${headline}</h3>
       <p>You reached <b>${points}%</b> of the best test score${win ? ` · +${points} points` : ''}.</p>
       <p>Your test MSE <b>${fmt(yours)}</b> · best found <b>${fmt(c.oracle.mse)}</b> · noise floor σ² <b>${fmt(r.noise ** 2)}</b></p>
       <p>Hidden function: <b>${r.target.name.toLowerCase()}</b>.</p>
-      <p>Best setting: ${modelSummary(c.oracle.model)}. <button class="link-btn" id="c-try-best" type="button">Try it</button></p>
+      <p>Best ${r.fixed ? 'penalty' : 'setting'}: ${bestText}. <button class="link-btn" id="c-try-best" type="button">Try it</button></p>
       <p class="meta">Keep tweaking: the test MSE now updates live.</p>`;
     box.hidden = false;
     $('c-try-best').addEventListener('click', () => {
+      const featuresChanged = ['basis', 'size', 'width', 'penalty', 'alpha'].some((k) => c.model[k] !== c.oracle.model[k]);
       Object.assign(c.model, c.oracle.model);
+      if (featuresChanged) {
+        c.path = null;
+        c.noPenaltyCv = null;
+      }
       cControls.sync();
       renderChallenge();
     });
     $('c-submit').disabled = true;
     $('c-hint').textContent = 'Hollow dots are the 200 test points';
+    if (c.path) c.path.test = null;
     renderChallenge();
   }
 

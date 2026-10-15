@@ -18,7 +18,15 @@ The center is a scatter plot: **click to add a point, drag to move it, click (or
 - **Under the hood:** coefficient bars, the full regularization path, and training vs. CV error as a function of λ or of model size. Click either chart to set λ / size, or jump to the CV-best value.
 
 ### Challenge (`#challenge`)
-Points are drawn from a hidden function plus noise. Tune the model using only the training data (and its CV error), then submit.
+Points are drawn from a hidden function plus noise. Each round starts from a flexible model (degree-12 polynomial, no penalty) that overfits,
+so regularization is the tool to reach for. Tune using only the training data, then submit.
+
+- **CV error vs λ** chart next to the controls, with the no-penalty CV error as a dashed reference; click it to set λ.
+  After submitting, the test-error curve is overlaid.
+- The CV readout shows the change against the same features without a penalty (e.g. "35% lower than no penalty").
+- **Round types:** *Free choice* (pick features and penalty) or *Tame the wiggle* (a large polynomial, RBF or Fourier basis is fixed;
+  you only choose the penalty, λ and α, and the reference searches only those).
+
 You are scored on 200 hidden test points relative to the best setting a grid search finds on that test set; win at 80 / 90 / 97 % of best.
 After submitting, the true function, test points and best setting are revealed and test MSE updates live.
 
