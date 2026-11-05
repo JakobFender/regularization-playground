@@ -354,7 +354,7 @@
 
   function readoutHtml(items) {
     return items
-      .map(({ label, value, title, accent }) => `<div${title ? ` title="${title}"` : ''}><dt>${label}</dt><dd${accent ? ' class="accent"' : ''}>${value}</dd></div>`)
+      .map(({ label, value, title }) => `<div${title ? ` title="${title}"` : ''}><dt>${label}</dt><dd>${value}</dd></div>`)
       .join('');
   }
 
@@ -737,7 +737,6 @@
         label: ex.cv ? (ex.cv.k === n ? 'LOO-CV MSE' : `${ex.cv.k}-fold CV MSE`) : 'CV MSE',
         value: ex.cv ? fmt(ex.cv.mean) : '–',
         title: ex.cv ? `± ${fmt(ex.cv.se)} (1 SE)` : 'needs at least 3 points',
-        accent: true,
       },
       { label: 'R²', value: f && isFinite(f.r2) ? f.r2.toFixed(3) : '–' },
       { label: 'Eff. df', value: f ? f.df.toFixed(1) : '–', title: 'trace of the hat matrix, incl. intercept' },
@@ -1146,9 +1145,9 @@
 
     const items = [
       { label: 'Train MSE', value: fmt(c.fit.trainMSE) },
-      { label: 'CV MSE', value: cv ? fmt(cv.mean) : '–', accent: !c.submitted },
+      { label: 'CV MSE', value: cv ? fmt(cv.mean) : '–' },
       { label: 'Eff. df', value: c.fit.df.toFixed(1) },
-      { label: 'Test MSE', value: c.submitted ? fmt(testMSE(c.fit)) : 'hidden', accent: c.submitted },
+      { label: 'Test MSE', value: c.submitted ? fmt(testMSE(c.fit)) : 'hidden' },
     ];
     if (c.submitted) items.push({ label: 'Best on test', value: fmt(c.oracle.mse) });
     $('c-readout').innerHTML = readoutHtml(items);
@@ -1253,13 +1252,13 @@
     box.className = `result ${win ? 'win' : 'lose'}`;
     const headline = win
       ? ratio >= 0.99
-        ? 'Spot <em>on</em>'
+        ? 'Spot on'
         : r.fixed
-          ? 'Wiggle <em>tamed</em>'
-          : 'Nicely <em>generalized</em>'
+          ? 'Wiggle tamed'
+          : 'Nicely generalized'
       : yours > 3 * c.oracle.mse
-        ? 'That one <em>wobbled</em>'
-        : 'Close, but not <em>quite</em>';
+        ? 'That one wobbled'
+        : 'Close, but not quite';
     const bestText = r.fixed
       ? R.penalties[c.oracle.model.penalty].name + (c.oracle.model.penalty === 'none' ? '' : ` λ = ${fmtLambda(c.oracle.model.logLambda)}`)
       : modelSummary(c.oracle.model);
